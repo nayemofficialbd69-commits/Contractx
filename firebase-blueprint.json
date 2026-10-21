@@ -1,0 +1,105 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Registered ConnectX user account with public ID and unique handle",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 50 },
+        "username": { "type": "string", "maxLength": 20, "pattern": "^[a-z0-9_]{3,20}$" },
+        "usernameNormalized": { "type": "string", "maxLength": 20, "pattern": "^[a-z0-9_]{3,20}$" },
+        "publicId": { "type": "string", "maxLength": 11, "pattern": "^CX-[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$" },
+        "photoURL": { "type": "string", "maxLength": 500 },
+        "bio": { "type": "string", "maxLength": 200 },
+        "email": { "type": "string", "maxLength": 100 },
+        "phoneNumber": { "type": "string", "maxLength": 20 },
+        "isEmailVerified": { "type": "boolean" },
+        "isPhoneVerified": { "type": "boolean" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" },
+        "lastSeen": { "type": "number" },
+        "isOnline": { "type": "boolean" },
+        "accountStatus": { "type": "string", "enum": ["active", "suspended", "pending_verification", "deactivated"] },
+        "suspensionReason": { "type": "string", "maxLength": 300 },
+        "isAdmin": { "type": "boolean" }
+      },
+      "required": ["uid", "displayName", "username", "usernameNormalized", "publicId", "accountStatus", "createdAt"]
+    },
+    "Conversation": {
+      "title": "Conversation",
+      "description": "One-to-one or group chat conversation room",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["direct", "group"] },
+        "participantIds": { "type": "array" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["id", "type", "participantIds", "createdAt", "updatedAt"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Real-time message record with text, media, voice, or location payload",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "conversationId": { "type": "string", "maxLength": 128 },
+        "senderId": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["text", "image", "video", "audio", "file", "location"] },
+        "text": { "type": "string", "maxLength": 5000 },
+        "mediaUrl": { "type": "string", "maxLength": 1000 },
+        "mediaDuration": { "type": "number" },
+        "status": { "type": "string", "enum": ["local_queued", "sent", "delivered", "read"] },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "conversationId", "senderId", "type", "status", "createdAt"]
+    },
+    "AdminAuditLog": {
+      "title": "AdminAuditLog",
+      "description": "Immutable audit record for administrative actions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "adminId": { "type": "string", "maxLength": 128 },
+        "adminEmail": { "type": "string", "maxLength": 100 },
+        "action": { "type": "string", "maxLength": 50 },
+        "targetResource": { "type": "string", "maxLength": 50 },
+        "details": { "type": "string", "maxLength": 500 },
+        "timestamp": { "type": "number" }
+      },
+      "required": ["id", "adminId", "adminEmail", "action", "targetResource", "details", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "User",
+      "description": "User profiles indexed by Firebase Auth UID"
+    },
+    "/usernames/{username}": {
+      "schema": {
+        "$ref": "User"
+      },
+      "description": "Normalized username registry for transactional uniqueness"
+    },
+    "/publicIds/{publicId}": {
+      "schema": {
+        "$ref": "User"
+      },
+      "description": "Unique public ID registry (CX-XXXXXXXX) mapping to UID"
+    },
+    "/conversations/{conversationId}": {
+      "schema": "Conversation",
+      "description": "Direct and group conversation entities"
+    },
+    "/conversations/{conversationId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Subcollection of messages inside a conversation"
+    },
+    "/adminAuditLogs/{logId}": {
+      "schema": "AdminAuditLog",
+      "description": "Audit trails for security and moderation actions"
+    }
+  }
+}

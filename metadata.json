@@ -1,0 +1,12 @@
+{
+  "name": "Remix ConnectX Messenger \u0026 Admin Panel",
+  "description": "Professional Android messaging platform featuring Google, Email, and Phone OTP Auth, unique Public ID Codes, Real-Time Chat, Voice notes, WebRTC Calling, and secure Admin Dashboard.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

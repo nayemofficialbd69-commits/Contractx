@@ -1,0 +1,291 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================================
+    // PILLAR 1: GLOBAL SAFETY NET (DEFAULT-DENY CATCH-ALL)
+    // =========================================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // GLOBAL PRIMITIVES & IDENTITY HELPERS
+    // =========================================================================
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // Server-side Admin Verification: checks trusted document or bootstrapped verified runtime admin email
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email == 'nayemofficial.bd69@gmail.com' && request.auth.token.email_verified == true)
+      );
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidPublicId(publicId) {
+      return publicId is string && publicId.size() == 11 && publicId.matches('^CX-[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$');
+    }
+
+    // =========================================================================
+    // VALIDATION BLUEPRINTS (PILLAR 2: ANTI-UPDATE-GAP HELPERS)
+    // =========================================================================
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'username', 'usernameNormalized', 'publicId', 'accountStatus', 'createdAt']) &&
+        data.uid is string && data.uid.size() <= 128 &&
+        data.displayName is string && data.displayName.size() > 0 && data.displayName.size() <= 50 &&
+        data.username is string && data.username.size() >= 3 && data.username.size() <= 20 &&
+        data.usernameNormalized is string && data.usernameNormalized.matches('^[a-z0-9_]{3,20}$') &&
+        isValidPublicId(data.publicId) &&
+        data.accountStatus in ['active', 'suspended', 'pending_verification', 'deactivated'] &&
+        (data.bio == null || (data.bio is string && data.bio.size() <= 200)) &&
+        (data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 500)) &&
+        (data.email == null || (data.email is string && data.email.size() <= 100)) &&
+        (data.phoneNumber == null || (data.phoneNumber is string && data.phoneNumber.size() <= 25)) &&
+        (data.isAdmin == null || data.isAdmin is bool);
+    }
+
+    function isValidConversation(data) {
+      return data.keys().hasAll(['id', 'type', 'participantIds', 'createdAt', 'updatedAt']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.type in ['direct', 'group'] &&
+        data.participantIds is list &&
+        data.participantIds.size() >= 2 &&
+        data.participantIds.size() <= 100 &&
+        data.createdAt is number &&
+        data.updatedAt is number;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['id', 'conversationId', 'senderId', 'type', 'status', 'createdAt']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.conversationId is string && data.conversationId.size() <= 128 &&
+        data.senderId is string && data.senderId.size() <= 128 &&
+        data.type in ['text', 'image', 'video', 'audio', 'file', 'location'] &&
+        data.status in ['local_queued', 'sent', 'delivered', 'read'] &&
+        (data.text == null || (data.text is string && data.text.size() <= 5000)) &&
+        (data.mediaUrl == null || (data.mediaUrl is string && data.mediaUrl.size() <= 1000)) &&
+        (data.reactions == null || (data.reactions is list && data.reactions.size() <= 50)) &&
+        data.createdAt is number;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['id', 'adminId', 'adminEmail', 'action', 'targetResource', 'details', 'timestamp']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.adminId is string && data.adminId.size() <= 128 &&
+        data.adminEmail is string && data.adminEmail.size() <= 100 &&
+        data.action is string && data.action.size() <= 50 &&
+        data.targetResource is string && data.targetResource.size() <= 50 &&
+        data.details is string && data.details.size() <= 500 &&
+        data.timestamp is number;
+    }
+
+    // =========================================================================
+    // COLLECTION: USERS (RBAC & ISOLATION)
+    // =========================================================================
+    match /users/{userId} {
+      // Get: user can read own profile; non-owners can read if profile discovery is enabled; admins can read all
+      allow get: if isOwner(userId) || isAdmin() || (
+        isSignedIn() &&
+        resource.data.privacy.whoCanFindByUsername == 'everyone'
+      );
+
+      // List: Query Enforcer (Pillar 8) - strictly bound to own user records or admin
+      allow list: if isSignedIn() && (
+        resource.data.uid == request.auth.uid ||
+        isAdmin()
+      );
+
+      // Create: user must write their own document matching UID; cannot grant self admin role or alter accountStatus
+      allow create: if isOwner(userId) &&
+        isValidUser(incoming()) &&
+        incoming().uid == request.auth.uid &&
+        incoming().isAdmin == false &&
+        incoming().accountStatus == 'active';
+
+      // Update: Tier 1 (Self-profile edit of non-immutable fields) || Admin moderation override
+      allow update: if (
+        isOwner(userId) &&
+        isValidUser(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().publicId == existing().publicId &&
+        incoming().isAdmin == existing().isAdmin &&
+        incoming().accountStatus == existing().accountStatus &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName',
+          'photoURL',
+          'bio',
+          'privacy',
+          'blockedUsers',
+          'updatedAt',
+          'lastSeen',
+          'isOnline'
+        ])
+      ) || isAdmin();
+
+      // Delete: only owner or administrator
+      allow delete: if isOwner(userId) || isAdmin();
+    }
+
+    // =========================================================================
+    // REGISTRIES: USERNAME & PUBLIC ID (TRANSACTIONAL UNIQUENESS & COLLISION GUARD)
+    // =========================================================================
+    match /usernames/{username} {
+      allow get: if isSignedIn();
+      allow create: if isSignedIn() &&
+        incoming().uid == request.auth.uid &&
+        !exists(/databases/$(database)/documents/usernames/$(username));
+      allow update: if false;
+      allow delete: if isSignedIn() && existing().uid == request.auth.uid;
+    }
+
+    match /publicIds/{publicId} {
+      allow get: if isSignedIn();
+      allow create: if isSignedIn() &&
+        isValidPublicId(publicId) &&
+        incoming().uid == request.auth.uid &&
+        !exists(/databases/$(database)/documents/publicIds/$(publicId));
+      allow update, delete: if false; // Permanent and immutable
+    }
+
+    // =========================================================================
+    // COLLECTION: CONVERSATIONS (RELATIONAL ISOLATION)
+    // =========================================================================
+    match /conversations/{conversationId} {
+      // Get & List: only active participants or admin can access conversation
+      allow get: if isSignedIn() && (
+        request.auth.uid in resource.data.participantIds ||
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        request.auth.uid in resource.data.participantIds ||
+        isAdmin()
+      );
+
+      // Create: participant list must include current user
+      allow create: if isSignedIn() &&
+        isValidId(conversationId) &&
+        isValidConversation(incoming()) &&
+        request.auth.uid in incoming().participantIds;
+
+      // Update: members can update conversation status/lastMessage; participants list is protected
+      allow update: if (
+        isSignedIn() &&
+        isValidConversation(incoming()) &&
+        request.auth.uid in existing().participantIds &&
+        incoming().participantIds == existing().participantIds &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'lastMessage',
+          'updatedAt',
+          'groupMeta',
+          'unreadCounts'
+        ])
+      ) || isAdmin();
+
+      // Delete: admin or group creator
+      allow delete: if isAdmin() || (
+        isSignedIn() &&
+        existing().groupMeta.createdBy == request.auth.uid
+      );
+
+      // =======================================================================
+      // SUBCOLLECTION: MESSAGES (PILLAR 1: MASTER GATE RELATIONAL SYNC)
+      // =======================================================================
+      match /messages/{messageId} {
+        // Read & List: Master Gate requires caller to be in parent conversation's participantIds
+        allow get, list: if isSignedIn() && (
+          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds ||
+          isAdmin()
+        );
+
+        // Create: Author identity integrity + membership in parent conversation
+        allow create: if isSignedIn() &&
+          isValidId(messageId) &&
+          isValidMessage(incoming()) &&
+          incoming().senderId == request.auth.uid &&
+          (request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds);
+
+        // Update: Split actions (Sender editing message vs Participant toggling emoji reaction)
+        allow update: if (
+          // Action 1: Sender updates own text / status
+          (
+            isSignedIn() &&
+            isValidMessage(incoming()) &&
+            existing().senderId == request.auth.uid &&
+            incoming().senderId == existing().senderId &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'text',
+              'isEdited',
+              'updatedAt',
+              'reactions',
+              'status'
+            ])
+          ) ||
+          // Action 2: Conversation participant toggles a message reaction
+          (
+            isSignedIn() &&
+            request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['reactions'])
+          ) ||
+          isAdmin()
+        );
+
+        // Delete: Author or admin
+        allow delete: if isSignedIn() && (
+          existing().senderId == request.auth.uid ||
+          isAdmin()
+        );
+      }
+    }
+
+    // =========================================================================
+    // COLLECTION: ADMIN AUDIT LOGS (ADMIN ONLY - TAMPER PROOF & APPEND ONLY)
+    // =========================================================================
+    match /adminAuditLogs/{logId} {
+      // Verified admin role mandatory for all operations
+      allow read: if isAdmin();
+      allow create: if isAdmin() &&
+        isValidId(logId) &&
+        isValidAuditLog(incoming()) &&
+        incoming().adminId == request.auth.uid;
+      // Invariant: Audit logs are strictly immutable and cannot be altered or purged
+      allow update, delete: if false;
+    }
+
+    // =========================================================================
+    // ANNOUNCEMENTS & REMOTE CONFIG
+    // =========================================================================
+    match /appConfiguration/{configId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /announcements/{announcementId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /userReports/{reportId} {
+      allow create: if isSignedIn() && incoming().reporterId == request.auth.uid;
+      allow read, update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+  }
+}
